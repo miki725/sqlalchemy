@@ -1185,7 +1185,7 @@ class SchemaType(SchemaEventTarget):
             return variant_mapping["_default"] is self
 
 
-class Enum(Emulated, String, SchemaType):
+class BaseEnum(Emulated, SchemaType):
     """Generic Enum Type.
 
     The :class:`.Enum` type provides a set of possible string values
@@ -1264,15 +1264,6 @@ class Enum(Emulated, String, SchemaType):
 
     __visit_name__ = "enum"
 
-    @util.deprecated_params(
-        convert_unicode=(
-            "1.3",
-            "The :paramref:`.Enum.convert_unicode` parameter is deprecated "
-            "and will be removed in a future release.  All modern DBAPIs "
-            "now support Python Unicode directly and this parameter is "
-            "unnecessary.",
-        )
-    )
     def __init__(self, *enums, **kw):
         r"""Construct an enum.
 
@@ -1380,30 +1371,9 @@ class Enum(Emulated, String, SchemaType):
         values, objects = self._parse_into_values(enums, kw)
         self._setup_for_values(values, objects, kw)
 
-        convert_unicode = kw.pop("convert_unicode", None)
-        self.validate_strings = kw.pop("validate_strings", False)
-
-        if convert_unicode is None:
-            for e in self.enums:
-                # this is all py2k logic that can go away for py3k only,
-                # "expect unicode" will always be implicitly true
-                if isinstance(e, util.text_type):
-                    _expect_unicode = True
-                    break
-            else:
-                _expect_unicode = False
-        else:
-            _expect_unicode = convert_unicode
-
-        if self.enums:
-            length = max(len(x) for x in self.enums)
-        else:
-            length = 0
         self._valid_lookup[None] = self._object_lookup[None] = None
 
-        super(Enum, self).__init__(
-            length=length, _expect_unicode=_expect_unicode
-        )
+        super(BaseEnum, self).__init__(**self._enum_init_super_kwargs(kw))
 
         if self.enum_class:
             kw.setdefault("name", self.enum_class.__name__.lower())
@@ -1416,6 +1386,11 @@ class Enum(Emulated, String, SchemaType):
             quote=kw.pop("quote", None),
             _create_events=kw.pop("_create_events", True),
         )
+
+    def _enum_init_super_kwargs(self):
+        """Hook to return derivate-specific kwargs for super init
+        """
+        return {}
 
     def _parse_into_values(self, enums, kw):
         if not enums and "_enums" in kw:
@@ -1458,35 +1433,9 @@ class Enum(Emulated, String, SchemaType):
         try:
             return self._valid_lookup[elem]
         except KeyError:
-            # for unknown string values, we return as is.  While we can
-            # validate these if we wanted, that does not allow for lesser-used
-            # end-user use cases, such as using a LIKE comparison with an enum,
-            # or for an application that wishes to apply string tests to an
-            # ENUM (see [ticket:3725]).  While we can decide to differentiate
-            # here between an INSERT statement and a criteria used in a SELECT,
-            # for now we're staying conservative w/ behavioral changes (perhaps
-            # someone has a trigger that handles strings on INSERT)
-            if not self.validate_strings and isinstance(
-                elem, compat.string_types
-            ):
-                return elem
-            else:
-                raise LookupError(
-                    '"%s" is not among the defined enum values' % elem
-                )
-
-    class Comparator(String.Comparator):
-        def _adapt_expression(self, op, other_comparator):
-            op, typ = super(Enum.Comparator, self)._adapt_expression(
-                op, other_comparator
+            raise LookupError(
+                '"%s" is not among the defined enum values' % elem
             )
-            if op is operators.concat_op:
-                typ = String(
-                    self.type.length, _expect_unicode=self.type._expect_unicode
-                )
-            return op, typ
-
-    comparator_factory = Comparator
 
     def _object_value_for_elem(self, elem):
         try:
@@ -1500,12 +1449,10 @@ class Enum(Emulated, String, SchemaType):
         return util.generic_repr(
             self,
             additional_kw=[("native_enum", True)],
-            to_inspect=[Enum, SchemaType],
+            to_inspect=[BaseEnum, SchemaType],
         )
 
     def adapt_to_emulated(self, impltype, **kw):
-        kw.setdefault("_expect_unicode", self._expect_unicode)
-        kw.setdefault("validate_strings", self.validate_strings)
         kw.setdefault("name", self.name)
         kw.setdefault("schema", self.schema)
         kw.setdefault("inherit_schema", self.inherit_schema)
@@ -1519,7 +1466,7 @@ class Enum(Emulated, String, SchemaType):
 
     def adapt(self, impltype, **kw):
         kw["_enums"] = self._enums_argument
-        return super(Enum, self).adapt(impltype, **kw)
+        return super(BaseEnum, self).adapt(impltype, **kw)
 
     def _should_create_constraint(self, compiler, **kw):
         if not self._is_impl_for_variant(compiler.dialect, kw):
@@ -1549,7 +1496,7 @@ class Enum(Emulated, String, SchemaType):
         assert e.table is table
 
     def literal_processor(self, dialect):
-        parent_processor = super(Enum, self).literal_processor(dialect)
+        parent_processor = super(BaseEnum, self).literal_processor(dialect)
 
         def process(value):
             value = self._db_value_for_elem(value)
@@ -1566,11 +1513,11 @@ class Enum(Emulated, String, SchemaType):
                 value = parent_processor(value)
             return value
 
-        parent_processor = super(Enum, self).bind_processor(dialect)
+        parent_processor = super(BaseEnum, self).bind_processor(dialect)
         return process
 
     def result_processor(self, dialect, coltype):
-        parent_processor = super(Enum, self).result_processor(dialect, coltype)
+        parent_processor = super(BaseEnum, self).result_processor(dialect, coltype)
 
         def process(value):
             if parent_processor:
@@ -1589,7 +1536,93 @@ class Enum(Emulated, String, SchemaType):
         if self.enum_class:
             return self.enum_class
         else:
-            return super(Enum, self).python_type
+            return super(BaseEnum, self).python_type
+
+
+class Enum(String, BaseEnum):
+    """TODO
+    """
+
+    @util.deprecated_params(
+        convert_unicode=(
+            "1.3",
+            "The :paramref:`.Enum.convert_unicode` parameter is deprecated "
+            "and will be removed in a future release.  All modern DBAPIs "
+            "now support Python Unicode directly and this parameter is "
+            "unnecessary.",
+        )
+    )
+    def __init__(self, *enums, **kw):
+        super(Enum, self).__init__(*enums, **kw)
+
+    def _enum_init_super_kwargs(self, kw):
+        """:class:`.Enum` kwargs getter for calling super init
+        """
+        if self.enums:
+            length = max(len(x) for x in self.enums)
+        else:
+            length = 0
+
+        convert_unicode = kw.pop("convert_unicode", None)
+        self.validate_strings = kw.pop("validate_strings", False)
+
+        if convert_unicode is None:
+            for e in self.enums:
+                # this is all py2k logic that can go away for py3k only,
+                # "expect unicode" will always be implicitly true
+                if isinstance(e, util.text_type):
+                    _expect_unicode = True
+                    break
+            else:
+                _expect_unicode = False
+        else:
+            _expect_unicode = convert_unicode
+
+        return {
+            "length": length,
+            "_expect_unicode": _expect_unicode,
+        }
+
+    def adopt_to_emulate(self, impltype, **kw):
+        kw.setdefault("_expect_unicode", self._expect_unicode)
+        kw.setdefault("validate_strings", self.validate_strings)
+        return super(Enum, self).adopt_to_emulate(impltype, **kw)
+
+
+    class Comparator(String.Comparator):
+        def _adapt_expression(self, op, other_comparator):
+            op, typ = super(Enum.Comparator, self)._adapt_expression(
+                op, other_comparator
+            )
+            if op is operators.concat_op:
+                typ = String(
+                    self.type.length, _expect_unicode=self.type._expect_unicode
+                )
+            return op, typ
+
+    comparator_factory = Comparator
+
+    def _db_value_for_elem(self, elem):
+        try:
+           return super(Enum, self)._db_value_for_elem(self, elem)
+        except LookupError:
+            # for unknown string values, we return as is.  While we can
+            # validate these if we wanted, that does not allow for lesser-used
+            # end-user use cases, such as using a LIKE comparison with an enum,
+            # or for an application that wishes to apply string tests to an
+            # ENUM (see [ticket:3725]).  While we can decide to differentiate
+            # here between an INSERT statement and a criteria used in a SELECT,
+            # for now we're staying conservative w/ behavioral changes (perhaps
+            # someone has a trigger that handles strings on INSERT)
+            if not self.validate_strings and isinstance(
+                elem, compat.string_types
+            ):
+                return elem
+            raise
+
+
+class IntEnum(Integer, BaseEnum):
+    __visit_name__ = "intenum"
 
 
 class PickleType(TypeDecorator):

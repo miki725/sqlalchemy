@@ -3316,6 +3316,9 @@ class GenericTypeCompiler(TypeCompiler):
     def visit_enum(self, type_, **kw):
         return self.visit_VARCHAR(type_, **kw)
 
+    def visit_intenum(self, type_, **kw):
+        return self.visit_INTEGER(type_, **kw)
+
     def visit_null(self, type_, **kw):
         raise exc.CompileError(
             "Can't generate DDL for %r; "
